@@ -134,6 +134,12 @@ void Engine::load(const std::string& vocabConfigJson,
     auto opt = std::make_unique<Ort::SessionOptions>();
     opt->SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
     opt->DisableProfiling();
+    // Under load the encoder and har sessions are the CPU half of the pipeline;
+    // left uncapped they each grab every core (see EngineConfig::cpuThreads).
+    if (cfg.cpuThreads > 0) {
+      opt->SetIntraOpNumThreads(cfg.cpuThreads);
+      opt->SetInterOpNumThreads(1);
+    }
 #ifdef USE_ORT_CUDA
     if (accelerator == "cuda") {
       OrtCUDAProviderOptions cuda{};

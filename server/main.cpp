@@ -30,6 +30,10 @@ struct RunConfig {
   bool disableWebUI = false;
   std::string defaultVoice = "sveta";
   std::filesystem::path modelsDir;
+  // ONNX Runtime intra-op threads (0 = ORT default, all cores) and the number
+  // of syntheses that may run at once. See EngineConfig::cpuThreads.
+  int cpuThreads = 0;
+  int synthThreads = 0;
 };
 
 } // namespace kokoro_server
@@ -37,6 +41,9 @@ struct RunConfig {
 extern kokoro_server::EnginePool g_pool;
 extern std::string g_authToken;
 extern std::string g_defaultVoice;
+// Defined here, read by engine_pool.cpp when it builds each engine.
+int g_cpuThreads = 0;
+extern int g_synthThreads;
 
 namespace {
 
@@ -51,6 +58,9 @@ void printUsage(const char* prog) {
     "  --lexicon-dir DIR     misaki us/gb JSONs (else ./misaki-data)\n"
     "  --web-root DIR        web UI directory (else auto-detect; see below)\n"
     "  --accelerator STR     ONNX accelerator: cuda, tensorrt (default none)\n"
+    "  --cpu-threads N       ONNX Runtime intra-op threads for encoder/har\n"
+    "                        (default: all cores; use ~cores/synth-threads)\n"
+    "  --synth-threads N     concurrent syntheses in flight (default 2)\n"
     "  --default-voice NAME  default voice name (default sveta)\n"
     "  --ip ADDR             bind address (default 0.0.0.0; env HOST/KOKORO_IP)\n"
     "  --port N              bind port (default 8848; env PORT)\n"
@@ -78,6 +88,8 @@ void parseArgs(int argc, char** argv, kokoro_server::RunConfig& rc) {
     else if (a == "--lexicon-dir") rc.lexiconDir = std::filesystem::path(need(a));
     else if (a == "--web-root") rc.webRoot = std::filesystem::path(need(a));
     else if (a == "--accelerator") rc.accelerator = need(a);
+    else if (a == "--cpu-threads") rc.cpuThreads = std::stoi(need(a));
+    else if (a == "--synth-threads") rc.synthThreads = std::stoi(need(a));
     else if (a == "--default-voice") rc.defaultVoice = need(a);
     else if (a == "--ip") rc.ip = need(a);
     else if (a == "--port") rc.port = static_cast<uint16_t>(std::stoul(need(a)));
@@ -139,6 +151,8 @@ int main(int argc, char** argv) {
                     : (kokoro::paths::exeDir() / "misaki-data").string();
   kokoro::G2P::init(lexiconDir, espeakData);
 
+  g_cpuThreads = rc.cpuThreads;
+  if (rc.synthThreads > 0) g_synthThreads = rc.synthThreads;
   g_pool.load(rc.accelerator);
   g_defaultVoice = rc.defaultVoice;
 

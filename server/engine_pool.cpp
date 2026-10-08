@@ -10,6 +10,9 @@
 
 #include "paths.hpp"
 
+// Set from --cpu-threads in server/main.cpp before the pool loads.
+extern int g_cpuThreads;
+
 namespace kokoro_server {
 namespace {
 
@@ -35,6 +38,7 @@ kokoro::EngineConfig EnginePool::makeConfig(const std::string& decoderPath) {
     cfg.decoderWorkers = 3;
   else
     cfg.decoderWorkers = 1;
+  cfg.cpuThreads = g_cpuThreads;
   return cfg;
 }
 

@@ -6,6 +6,7 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -30,10 +31,17 @@ kokoro_server::EnginePool g_pool;
 std::string g_authToken;
 std::string g_defaultVoice;
 
-static trantor::EventLoopThreadPool g_synthPool(2, "kokoro-synth");
+// Size comes from --synth-threads (server/main.cpp), which runs before the first
+// request, so the pool is built lazily on first use.
+int g_synthThreads = 2;
+static std::unique_ptr<trantor::EventLoopThreadPool> g_synthPool;
 static std::once_flag g_synthPoolOnce;
 static void ensureSynthPool() {
-  std::call_once(g_synthPoolOnce, [] { g_synthPool.start(); });
+  std::call_once(g_synthPoolOnce, [] {
+    g_synthPool = std::make_unique<trantor::EventLoopThreadPool>(g_synthThreads,
+                                                                "kokoro-synth");
+    g_synthPool->start();
+  });
 }
 
 namespace {
@@ -250,7 +258,7 @@ void v1::synthesise(const HttpRequestPtr& req,
   }
 
   ensureSynthPool();
-  g_synthPool.getNextLoop()->queueInLoop([p = std::move(p),
+  g_synthPool->getNextLoop()->queueInLoop([p = std::move(p),
                                           cb = std::move(cb)]() mutable {
     std::vector<int16_t> audio;
     try {
@@ -321,7 +329,7 @@ void v1ws::handleNewMessage(const WebSocketConnectionPtr& ws, std::string&& msg,
   auto wsConn = ws;
 
   ensureSynthPool();
-  g_synthPool.getNextLoop()->queueInLoop([wsConn, message]() mutable {
+  g_synthPool->getNextLoop()->queueInLoop([wsConn, message]() mutable {
     ApiParams p;
     try {
       p = parseParams(message);
@@ -483,7 +491,7 @@ void audio::speech(const HttpRequestPtr& req,
   }
 
   ensureSynthPool();
-  g_synthPool.getNextLoop()->queueInLoop([p = std::move(p),
+  g_synthPool->getNextLoop()->queueInLoop([p = std::move(p),
                                           cb = std::move(cb)]() mutable {
     std::vector<int16_t> audio;
     try {

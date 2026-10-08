@@ -35,6 +35,12 @@ struct EngineConfig {
   // Worker threads for the per-window har/decoder/iSTFT pipeline. Match the
   // RKNN context count (3 on RK3588). ONNX-only builds set this to 1.
   int decoderWorkers = 3;
+
+  // Intra-op threads for the ONNX Runtime sessions (encoder, har generator).
+  // 0 = let ORT take every core, which is right for one offline synthesis and
+  // wrong for a server: N concurrent syntheses × 2 sessions × 8 threads on 8
+  // cores is hyperthreading, and throughput drops.
+  int cpuThreads = 0;
 };
 
 struct SynthesisResult {
