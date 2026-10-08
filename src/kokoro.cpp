@@ -22,6 +22,7 @@
 
 #ifdef USE_RKNN
 #include "rknn-decoder.hpp"
+#include "rknn-matmul-op.hpp"
 #endif
 
 namespace kokoro {
@@ -149,6 +150,11 @@ void Engine::load(const std::string& vocabConfigJson,
       OrtTensorRTProviderOptions trt{};
       opt->AppendExecutionProvider_TensorRT(trt);
     }
+#endif
+#ifdef USE_RKNN
+    // Encoder GEMMs on the NPU (com.rknn/RknnMatMul, see rknn-matmul-op.cpp).
+    // Registering the domain costs nothing for graphs that use no such node.
+    opt->Add(rknnMatMulDomain());
 #endif
     return opt;
   };

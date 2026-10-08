@@ -73,6 +73,7 @@ ONNX_DIR    = HERE / "onnx"
 VOICES_DST  = HERE / "voices_npy"
 
 ENC_ONNX    = ONNX_DIR / "kokoro_encoder.onnx"
+ENC_NPU     = ONNX_DIR / "kokoro_encoder_npu.onnx"
 HAR_ONNX    = ONNX_DIR / "har_generator.onnx"
 DEC_RAW     = ONNX_DIR / "_decoder_raw.onnx"
 DEC_FIXED   = ONNX_DIR / "_decoder_fixnorm.onnx"
@@ -661,6 +662,68 @@ def rewrite_pow2_to_mul(model):
     return n_done
 
 
+def rewrite_encoder_matmul_npu(model):
+    """Rewrite encoder MatMuls that multiply by a constant weight into the
+    com.rknn/RknnMatMul custom op, which runs the GEMM on the NPU through
+    rknn_matmul_api (src/rknn-matmul-op.cpp).
+
+    Eligible: weight is an initializer, or a Transpose of one (nn.Linear exports
+    as x @ Transpose(W)), K % 32 == 0 and N % 16 == 0 (the RK3588 fp16 matmul
+    tile constraints) and K <= 10240. Everything else stays MatMul: attention
+    QK^T / A·V (dynamic B, batched) and the [512,50] duration head, whose N is
+    not a multiple of 16.
+
+    Output shapes go into graph.value_info because ops registered through
+    Ort::CustomOpDomain carry no shape-inference function in ONNX Runtime 1.16,
+    so the graph has to state them for the nodes downstream to be typed.
+    """
+    inferred  = onnx.shape_inference.infer_shapes(model, strict_mode=False)
+    g         = model.graph
+    shapes = {vi.name: [d.dim_value if d.dim_value > 0 else d.dim_param
+                        for d in vi.type.tensor_type.shape.dim]
+              for vi in list(inferred.graph.value_info) + list(inferred.graph.input)
+                        + list(inferred.graph.output)}
+    inits     = {i.name for i in g.initializer}
+    producers = {o: n for n in g.node for o in n.output}
+
+    def weight_shape(name):
+        """(K, N) of the constant right-hand side. The exporter wraps nn.Linear's
+        weight in Identity nodes and puts a Transpose in front of the MatMul
+        (x @ Wᵀ), so walk the Identity chain and then that Transpose."""
+        init = _resolve_through_identity(model, name, producers)
+        if init is None or len(init.dims) != 2:
+            return None
+        w = list(init.dims)
+        p = producers.get(name)
+        if p is not None and p.op_type == "Transpose":
+            perm = [a.i for a in p.attribute if a.name == "perm"]
+            return (w[1], w[0]) if perm in ([1, 0], []) else None
+        return (w[0], w[1])
+
+    n_done = 0
+    for node in g.node:
+        if node.op_type != "MatMul" or len(node.input) != 2:
+            continue
+        w = weight_shape(node.input[1])
+        if w is None:
+            continue
+        K, N = w
+        if K % 32 or N % 16 or K > 10240:
+            continue
+        a = shapes.get(node.input[0])
+        if not a:
+            continue
+        node.domain  = "com.rknn"
+        node.op_type = "RknnMatMul"
+        od = list(a); od[-1] = N
+        g.value_info.append(helper.make_tensor_value_info(node.output[0], onnx.TensorProto.FLOAT, od))
+        n_done += 1
+
+    if n_done and not any(oi.domain == "com.rknn" for oi in model.opset_import):
+        model.opset_import.append(helper.make_opsetid("com.rknn", 1))
+    return n_done
+
+
 def graph_surgery(t_fix, taylor_degree):
     print("[5/6] graph surgery")
 
@@ -713,6 +776,9 @@ def main():
     ap.add_argument("--taylor-degree", type=int, default=7, choices=[5, 7, 9])
     ap.add_argument("--skip-rknn", action="store_true",
                     help="ONNX only; skip the rknn-toolkit2 step")
+    ap.add_argument("--npu-matmul", action="store_true",
+                    help="Also write kokoro_encoder_npu.onnx, with the encoder's "
+                         "constant-weight MatMuls rewritten to com.rknn/RknnMatMul")
     ap.add_argument("--rebuild", action="store_true",
                     help="Delete intermediate ONNX files first")
     args = ap.parse_args()
@@ -729,6 +795,11 @@ def main():
     export_onnx(kmodel, istftnet, args.t_fix)
     convert_voices()
     graph_surgery(args.t_fix, args.taylor_degree)
+    if args.npu_matmul:
+        m = onnx.load(str(ENC_ONNX))
+        n = rewrite_encoder_matmul_npu(m)
+        onnx.save(m, str(ENC_NPU))
+        print(f"       npu-mm    : rewrote {n} encoder MatMul → com.rknn/RknnMatMul  →  {ENC_NPU.name}")
     if not args.skip_rknn:
         compile_rknn(args.t_fix)
     else:

@@ -54,7 +54,11 @@ void EnginePool::load(const std::string& accelerator) {
     }
 
     const std::string vocab = kokoro::paths::packFile(pack, "config.json");
-    const std::string encoder = kokoro::paths::packFile(pack, "kokoro_encoder.onnx");
+    // NPU-GEMM variant of the encoder wins when the pack ships it (build.py
+    // --npu-matmul), same fallback style as the decoder below.
+    std::string encoder = kokoro::paths::packFile(pack, "kokoro_encoder_npu.onnx");
+    if (!fileExists(encoder))
+      encoder = kokoro::paths::packFile(pack, "kokoro_encoder.onnx");
     const std::string har = kokoro::paths::packFile(pack, "har_generator.onnx");
     std::string decoder = kokoro::paths::packFile(pack, "kokoro_decoder.rknn");
     if (!fileExists(decoder))
